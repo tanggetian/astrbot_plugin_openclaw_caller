@@ -1,0 +1,63 @@
+{
+  "openclaw_url": {
+    "type": "string",
+    "description": "[连接地址] OpenClaw 根 URL",
+    "hint": "只填根 URL，插件自动拼 /v1/chat/completions 端点。\n\n例如：https://your-openclaw-host:port\n（不要带 /v1/chat/completions）",
+    "default": ""
+  },
+  "openclaw_token": {
+    "type": "string",
+    "description": "[鉴权] OpenClaw Bearer Token",
+    "hint": "OpenClaw Gateway 的鉴权 Token。该字段属于敏感配置，请勿截图公开或写入日志。",
+    "default": ""
+  },
+  "openclaw_agent_id": {
+    "type": "string",
+    "description": "[Agent] agent ID",
+    "hint": "OpenClaw 控制台里的 agent 标识，默认 main。",
+    "default": "main"
+  },
+  "openclaw_timeout": {
+    "type": "int",
+    "description": "[超时] 请求总超时（秒）",
+    "hint": "长任务请适当调大（默认 300 = 5 分钟）。",
+    "default": 300
+  },
+  "openclaw_verify_ssl": {
+    "type": "bool",
+    "description": "[安全] 验证 OpenClaw 服务器 SSL 证书",
+    "hint": "默认开启——保护 Bearer Token 不被中间人偷走。\n\n仅当 OpenClaw 部署在本地且用自签名证书时，**显式**关闭此项。",
+    "default": true
+  },
+  "openclaw_system_prompt": {
+    "type": "string",
+    "description": "[提示词] 发给 OpenClaw 的 system message 模板",
+    "hint": "这个模板会在每个 project/session_key 第一次任务开始时注入给 OpenClaw agent；同一桶后续任务不重复发送，不会注入 AstrBot 主控 LLM。\n\n首轮采用双保险：既作为 OpenAI messages[0].role=system 发送，也会内嵌到第一条 user 任务开头，避免 OpenAI 兼容 Gateway 不持久化 system role 导致提示词丢失。\n\n模板内容会参与 session_key 版本号计算：首次配置或修改模板后，会自动开启新的 OpenClaw 会话桶，确保提示词位于项目最开头。\n\n留空则不发送 system message。\n\n可用变量：{project} / {{project}}、{user_id} / {{user_id}}、{session_key} / {{session_key}}。\n\n示例：我是xxx（AstrBot 机器人的名称），是主人的调度助手，目前转达主人命令。",
+    "default": ""
+  },
+  "access_control": {
+    "type": "object",
+    "description": "[权限] 白名单与访问控制",
+    "hint": "控制哪些用户可以调用本插件功能。",
+    "items": {
+      "whitelist_enabled": {
+        "type": "bool",
+        "description": "启用白名单（默认开）",
+        "hint": "默认开启。开启时，只有白名单中的用户能调用。首次使用请把允许的用户 ID 填到下方的 allowed_user_ids 列表里。\n\n关闭后所有用户都能调用本插件，不推荐。",
+        "default": true
+      },
+      "allowed_user_ids": {
+        "type": "list",
+        "description": "允许调用的用户 ID 列表（默认空，首次使用需填）",
+        "hint": "用户 ID 列表。默认空——开启白名单后必须填这个列表才能用。\n\n获取方法：私聊 AstrBot 发消息后，看 AstrBot 日志里的 sender_id。\n\n示例：[\"123456\", \"789012\"]",
+        "default": []
+      },
+      "block_when_disabled": {
+        "type": "bool",
+        "description": "未在白名单时静默拦截",
+        "hint": "启用后，未在白名单的用户会被静默拦截（不提示原因）。\n\n关闭则提示『不在白名单』。",
+        "default": false
+      }
+    }
+  }
+}
