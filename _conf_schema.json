@@ -20,8 +20,8 @@
   "openclaw_timeout": {
     "type": "int",
     "description": "[超时] 请求总超时（秒）",
-    "hint": "长任务请适当调大（默认 300 = 5 分钟）。",
-    "default": 300
+    "hint": "长任务请适当调大（默认 1800 = 30 分钟）。\n\n包含 SSE 流式响应的全部时间——agent 跑深调研 / 多步工具调用时，5 分钟经常不够。\n\n如果 OpenClaw 部署在反向代理（nginx / caddy / traefik）后面，需要同时把代理的 proxy_read_timeout / proxy_send_timeout 也调大，否则代理会先于本超时把长连接掐掉，表现为「已收到部分内容后突然连接中断」（本插件会自动返回已收到的部分并打 status=partial_response 日志，但根因在代理）。",
+    "default": 1800
   },
   "openclaw_verify_ssl": {
     "type": "bool",

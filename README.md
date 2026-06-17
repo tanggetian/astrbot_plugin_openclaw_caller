@@ -15,7 +15,9 @@ AstrBot ↔ OpenClaw Gateway 桥接插件。
 
 ## 📦 安装
 
-将本插件目录放到 AstrBot 的 `data/plugins/` 下，重启 AstrBot。
+1.将本插件目录放到 AstrBot 的 `data/plugins/` 下，重启 AstrBot。
+
+2.在astrbot插件市场搜索openclaw任务委派安装
 
 ## ⚙️ 配置
 
@@ -26,7 +28,7 @@ AstrBot ↔ OpenClaw Gateway 桥接插件。
 | `openclaw_url` | OpenClaw Gateway 根 URL（不含端点路径，插件自动拼 `/v1/chat/completions`） |
 | `openclaw_token` | OpenClaw Bearer Token（必填） |
 | `openclaw_agent_id` | OpenClaw agent ID（默认 `main`） |
-| `openclaw_timeout` | 请求总超时（秒，默认 300） |
+| `openclaw_timeout` | 请求总超时（秒，默认 1800 = 30 分钟） |
 | `openclaw_verify_ssl` | 是否验证 OpenClaw HTTPS 证书（默认开启；仅自签名/本地场景建议关闭） |
 | `openclaw_system_prompt` | 每个 project/session_key 首次任务开始时发给 OpenClaw 的 system message 模板（留空不发送；支持 `{project}`、`{user_id}`、`{session_key}`） |
 | `access_control` | 用户白名单（**默认开启**——首次使用需在 WebUI 填 `allowed_user_ids` 列表） |
@@ -70,10 +72,11 @@ AstrBot ↔ OpenClaw Gateway 桥接插件。
 - 扫描、调研、代码生成、文件/数据分析、联网查询、自动化运维、外部系统操作
 - 用户明确说“交给 agent / OpenClaw / 后台跑 / 长任务 / 帮我执行 / 跑一下”
 - 任务预计超过 30 秒，或主控 LLM 无法直接在当前对话里可靠完成
+- 用户要继续追问、细化、澄清、补充、让 OpenClaw 基于刚才结果继续处理时，可使用前台同步模式（`background=false`）和 OpenClaw 进行连续多轮对话
 
 如果模型仍不主动调用，请检查 AstrBot 当前 Provider 是否启用了 Function Calling / Tool Call 能力，并确认插件详情页工具列表里存在 `delegate_to_openclaw`。
 
-主控 LLM 应按用户语义选择不同 `project`：调研类可用 `research`，代码类可用 `code`，扫描类可用 `scan`，运维类可用 `ops`。同一 `project` 会共享 OpenClaw 端上下文，不相关任务不要复用同一桶。
+主控 LLM 应按用户语义选择不同 `project`：调研类可用 `research`，代码类可用 `code`，扫描类可用 `scan`，运维类可用 `ops`。同一 `project` 会共享 OpenClaw 端上下文，不相关任务不要复用同一桶。后台任务完成后，如果用户要在前台继续和该项目 agent 沟通，必须继续传同一个 `project`；不传或传 `general` 时，前台同步会绑定当前 AstrBot 对话。
 
 后台任务完成后，结果会推送给用户并写入插件独立 SQLite 数据库。用户要求“分析/总结/解释刚才 OpenClaw 返回结果”时，主控 LLM 应调用 `get_openclaw_task_result`，按 `task_id` 或最近任务读取结果后再分析，避免看不到异步推送内容而编造。
 
@@ -126,19 +129,55 @@ AstrBot：好的主人，我去问 agent……
 
 > 本插件启动时会在日志中输出 `[openclaw_caller] 初始化完成: url_configured=..., agent_id=..., has_openclaw_system_prompt=...`，可用于确认配置读取是否正确；不会输出 token。
 
-## 📂 目录结构
+## 📑 调试 / 日志
+
+> **详细字段定义、grep 示例、status 列表、推送路径升级**等管理侧内容，统一在 [DEBUG.md](DEBUG.md) 里维护。本 README 只面向「怎么用」的用户视角——遇到问题时知道去 DEBUG.md 查。
+
+## 🔐 安全说明
+
+- **白名单**：`access_control.whitelist_enabled=True` 时只有 `allowed_user_ids` 列表里的用户能调；`block_when_disabled=True` 时未授权调用静默拒绝。
+- **LLM Tool 安全门**：`delegate_to_openclaw` 不暴露 `sender_id` 参数——AstrBot 注入的真 event 是 sender_id 的唯一来源，LLM 无法伪造。
+- **数据库**：每个 AstrBot 实例的 openclaw_sessions / openclaw_tasks 表彼此隔离（独立 SQLite 在 `data/plugins/astrbot_plugin_openclaw_caller/openclaw_caller.db`）。
+- **session_key 隔离**：`<platform>-<sender_id>-<mode>-<project>-<sp_version>`，不同平台/不同用户/不同项目/不同 system prompt 版本各自独立 OpenClaw session。
+- **日志脱敏**：完整 URL / Token / sender_id / task 文本 / 响应文本**不进** AstrBot 日志；只记 digest（SHA1 前 8 字符）+ 字符数。
+- **首轮 system prompt 双保险**：每次开新 session 时，既发 `messages[0].role=system`，也把模板内嵌到第一条 user 消息开头——兼容不持久化 system role 的 OpenAI 兼容 Gateway。
+
+## 🛠 配置项详解
+
+| key | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `openclaw_url` | str | ✅ | OpenClaw Gateway 根 URL（**不带** `/v1/chat/completions`） |
+| `openclaw_token` | str | ✅ | Bearer Token |
+| `openclaw_agent_id` | str | ❌ | 默认 `main` |
+| `openclaw_timeout` | int | ❌ | 默认 `1800` 秒，前台/后台 OpenClaw 调用共用同一超时 |
+| `openclaw_verify_ssl` | bool | ❌ | 默认 `True`，自签名证书场景关掉 |
+| `openclaw_system_prompt` | str | ❌ | 发给 OpenClaw 的 system message 模板；支持 `{project}` / `{user_id}` / `{session_key}` 占位符。示例：我是xxx（AstrBot 机器人的名称），是主人的调度助手，目前转达主人命令。 |
+| `access_control.whitelist_enabled` | bool | ❌ | 默认 `True`——不开启时所有用户可调 |
+| `access_control.allowed_user_ids` | list[str] | ❌ | 白名单用户 ID 列表（按 AstrBot 平台规范，aiocqhttp 用 QQ 号字符串） |
+| `access_control.block_when_disabled` | bool | ❌ | 默认 `False`——未授权时是否给用户明确提示 |
+
+## 📂 文件结构
 
 ```text
 astrbot_plugin_openclaw_caller/
+├── __init__.py                # 插件元数据 & 默认配置
+├── _conf_schema.json          # WebUI 配置 schema
+├── main.py                    # Star 入口（薄——纯装饰器 + state 初始化）
+├── metadata.yaml              # 插件市场元数据
 ├── README.md
-├── __init__.py
-├── _conf_schema.json
-├── main.py
-├── metadata.yaml
-├── requirements.txt
-└── pages/
-    └── openclaw-tasks/
-        ├── index.html
-        ├── app.js
-        └── style.css
+├── requirements.txt           # aiohttp>=3.11
+├── core/                      # ★ 1.2.0 新增子包——把 main.py 业务逻辑全拆出
+│   ├── __init__.py
+│   ├── util.py                # PLUGIN_NAME / OpenClawError / sanitize_error / to_bool / digest / new_request_id
+│   ├── lite_event.py          # LiteEvent mock（带 staticmethod 修复）
+│   ├── access.py              # 白名单 check_allowed
+│   ├── session.py             # session_key 生成 / system_prompt 渲染 / 项目名归一化 / prompt 解析
+│   ├── storage.py             # SQLite + TaskLog 类（openclaw_sessions + openclaw_tasks CRUD）
+│   ├── client.py              # OpenClawClient（封装备 /v1/chat/completions + 结构化日志）
+│   ├── runner.py              # background_run（参数注入，后台任务生命周期 + 结构化日志）
+│   └── api.py                 # Plugin Page Web API handlers（list / cancel / delete）
+└── pages/openclaw-tasks/      # 插件页面
+    ├── index.html
+    ├── style.css
+    └── app.js
 ```
