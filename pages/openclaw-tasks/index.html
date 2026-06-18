@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>OpenClaw 任务列表</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 id="heading">OpenClaw 任务列表</h1>
+      <div class="stats">
+        <span class="stat running">运行中：<b id="cnt-running">-</b></span>
+        <span class="stat done">已完成：<b id="cnt-done">-</b></span>
+        <span class="stat failed">失败：<b id="cnt-failed">-</b></span>
+        <span class="stat no_recipient">无推送：<b id="cnt-no-recipient">-</b></span>
+        <span class="stat total">总计：<b id="cnt-total">-</b></span>
+        <button id="refresh">刷新</button>
+      </div>
+    </header>
+
+    <section>
+      <h2 id="sec-running">运行中（当前任务）</h2>
+      <table id="tbl-running"><thead><tr><th>项目</th><th>任务</th><th>模式</th><th>创建时间</th><th>task_id</th><th>操作</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section>
+      <h2 id="sec-history">历史任务</h2>
+      <table id="tbl-history"><thead><tr><th>项目</th><th>任务</th><th>状态</th><th>模式</th><th>创建</th><th>完成</th><th>耗时</th><th>task_id</th><th>操作</th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

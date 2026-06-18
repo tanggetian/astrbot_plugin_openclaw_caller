@@ -1,0 +1,37 @@
+:root {
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --border: #e0e0e0;
+  --ok: #4caf50; --warn: #ff9800; --err: #f44336; --info: #2196f3;
+}
+[data-theme="dark"] {
+  --bg: #1a1a1a; --fg: #e0e0e0; --muted: #999; --border: #333;
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 16px; }
+.container { max-width: 1200px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 16px; }
+h1 { margin: 0; font-size: 20px; }
+h2 { font-size: 16px; margin: 20px 0 8px; color: var(--muted); }
+.stats { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.stat { padding: 4px 10px; border-radius: 4px; background: var(--border); font-size: 13px; }
+.stat.running { color: var(--info); }
+.stat.done { color: var(--ok); }
+.stat.failed { color: var(--err); }
+.stat.no_recipient { color: var(--err); font-weight: bold; }
+button { padding: 6px 14px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); border-radius: 4px; cursor: pointer; }
+button:hover { background: var(--border); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+button.danger { border-color: var(--err); color: var(--err); padding: 4px 8px; font-size: 12px; }
+button.danger:hover { background: var(--err); color: white; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+td.task { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.id { font-family: monospace; color: var(--muted); font-size: 11px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; }
+.badge.running { background: var(--info); color: white; }
+.badge.done { background: var(--ok); color: white; }
+.badge.failed { background: var(--err); color: white; }
+.badge.cancelled { background: var(--warn); color: white; }
+.badge.no_recipient { background: var(--err); color: white; font-weight: bold; box-shadow: 0 0 0 1px rgba(244, 67, 54, 0.4); }
+.empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
+.notice { color: var(--ok); padding: 12px; text-align: center; border: 1px solid var(--ok); border-radius: 4px; margin-bottom: 12px; }
