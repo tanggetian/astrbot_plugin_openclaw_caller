@@ -1,6 +1,9 @@
 # 更新日志
+## 1.3.1 - 2026-06-19
 
-## 1.3 - 2026-06-16
+- **修复 插件市场拉取失败**：修复插件市场拉取失败
+
+## 1.3.0 - 2026-06-16
 
 - **修复 tool-sync 前台多轮会话锚点**：同步工具调用在未指定 `project`（或 `project=general`）时绑定到 AstrBot 当前会话（`unified_msg_origin + curr_conversation_id` 的 digest）；同一个 AstrBot 对话里的多次前台委派会稳定落到同一个 OpenClaw 对话。
 - **支持前台指定项目对话**：同步工具调用只要显式传入 `project != general`，就会进入该项目桶，能续接之前同 project 的后台任务对话；例如后台 `project=research` 跑完后，前台追问也传 `project=research`。
