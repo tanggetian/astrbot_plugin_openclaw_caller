@@ -35,6 +35,12 @@
     "hint": "这个模板会在每个 project/session_key 第一次任务开始时注入给 OpenClaw agent；同一桶后续任务不重复发送，不会注入 AstrBot 主控 LLM。\n\n首轮采用双保险：既作为 OpenAI messages[0].role=system 发送，也会内嵌到第一条 user 任务开头，避免 OpenAI 兼容 Gateway 不持久化 system role 导致提示词丢失。\n\n模板内容会参与 session_key 版本号计算：首次配置或修改模板后，会自动开启新的 OpenClaw 会话桶，确保提示词位于项目最开头。\n\n留空则不发送 system message。\n\n可用变量：{project} / {{project}}、{user_id} / {{user_id}}、{session_key} / {{session_key}}。\n\n示例：我是xxx（AstrBot 机器人的名称），是主人的调度助手，目前转达主人命令。",
     "default": ""
   },
+  "background_result_relay_via_astrbot": {
+    "type": "bool",
+    "description": "[结果通知] 由 AstrBot 转述后台任务结果",
+    "hint": "默认关闭：OpenClaw 完成或失败后直接主动推送结果给原会话。\n\n开启后：插件会把后台任务结果作为内部消息重新投递给 AstrBot，由 AstrBot 按当前人格、会话上下文和模型配置向用户转述。结果中的指令不会作为新的任务执行。\n\n适合希望后台结果保持 AstrBot 角色口吻的场景；会额外消耗一次 AstrBot 模型调用。",
+    "default": false
+  },
   "access_control": {
     "type": "object",
     "description": "[权限] 白名单与访问控制",

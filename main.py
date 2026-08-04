@@ -60,6 +60,10 @@ class OpenClawCaller(Star):
 
         # 发给 OpenClaw 的 system message 模板；空则不发送 system message
         self.openclaw_system_prompt = str(_cfg("openclaw_system_prompt", "") or "").strip()
+        self.background_result_relay_via_astrbot = to_bool(
+            _cfg("background_result_relay_via_astrbot", False),
+            False,
+        )
 
         # === 访问控制 ===
         ac_raw = _cfg("access_control", {})
@@ -129,7 +133,8 @@ class OpenClawCaller(Star):
         logger.info(
             f"[openclaw_caller] 初始化完成: url_configured={bool(self.openclaw_url)}, "
             f"agent_id={self.openclaw_agent_id}, "
-            f"has_openclaw_system_prompt={bool(self.openclaw_system_prompt)}"
+            f"has_openclaw_system_prompt={bool(self.openclaw_system_prompt)}, "
+            f"background_result_relay_via_astrbot={self.background_result_relay_via_astrbot}"
         )
 
         # === 就绪性检查：未填配置时给主人清晰的提示 ===
@@ -339,6 +344,8 @@ class OpenClawCaller(Star):
             task_log=self._task_log,
             bg_tasks=self._bg_tasks,
             task_handles=self._task_handles,
+            context=self.context,
+            relay_via_astrbot=self.background_result_relay_via_astrbot,
         ))
         self._task_handles[task_id] = task_handle
 
@@ -513,6 +520,7 @@ class OpenClawCaller(Star):
                 task_handles=self._task_handles,
                 platform_meta=extract_send_target(event),  # v1.2 延迟推送 fallback
                 context=self.context,                       # v1.2 延迟推送 fallback
+                relay_via_astrbot=self.background_result_relay_via_astrbot,
             ))
             self._task_handles[task_id] = task_handle
             return json.dumps({
