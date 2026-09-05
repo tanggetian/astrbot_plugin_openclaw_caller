@@ -33,6 +33,7 @@ AstrBot ↔ OpenClaw Gateway 桥接插件。
 | `openclaw_timeout` | 请求总超时（秒，默认 1800 = 30 分钟） |
 | `openclaw_verify_ssl` | 是否验证 OpenClaw HTTPS 证书（默认开启；仅自签名/本地场景建议关闭） |
 | `openclaw_system_prompt` | 每个 project/session_key 首次任务开始时发给 OpenClaw 的 system message 模板（留空不发送；支持 `{project}`、`{user_id}`、`{session_key}`） |
+| `background_result_relay_via_astrbot` | 后台结果是否先交给 AstrBot 按当前人格转述（默认关闭，关闭时直接推送原始结果） |
 | `access_control` | 用户白名单（**默认开启**——首次使用需在 WebUI 填 `allowed_user_ids` 列表） |
 
 > **安全默认值**：白名单默认开启，SSL 证书验证默认开启；`openclaw_url` 和 `openclaw_token` 需手动填写。
@@ -80,7 +81,7 @@ AstrBot ↔ OpenClaw Gateway 桥接插件。
 
 主控 LLM 应按用户语义选择不同 `project`：调研类可用 `research`，代码类可用 `code`，扫描类可用 `scan`，运维类可用 `ops`。同一 `project` 会共享 OpenClaw 端上下文，不相关任务不要复用同一桶。后台任务完成后，如果用户要在前台继续和该项目 agent 沟通，必须继续传同一个 `project`；不传或传 `general` 时，前台同步会绑定当前 AstrBot 对话。
 
-后台任务完成后，结果会推送给用户并写入插件独立 SQLite 数据库。用户要求“分析/总结/解释刚才 OpenClaw 返回结果”时，主控 LLM 应调用 `get_openclaw_task_result`，按 `task_id` 或最近任务读取结果后再分析，避免看不到异步推送内容而编造。
+后台任务完成后，结果会推送给用户并写入插件独立 SQLite 数据库。默认直接推送 OpenClaw 原始结果；开启 `background_result_relay_via_astrbot` 后，结果会重新进入 AstrBot 的正常会话管线，由当前人格转述（会额外调用一次 AstrBot 模型）。用户要求“分析/总结/解释刚才 OpenClaw 返回结果”时，主控 LLM 应调用 `get_openclaw_task_result`，按 `task_id` 或最近任务读取结果后再分析，避免看不到异步推送内容而编造。
 
 ### 3. 后台推送失效时的降级
 
@@ -154,6 +155,7 @@ AstrBot：好的主人，我去问 agent……
 | `openclaw_timeout` | int | ❌ | 默认 `1800` 秒，前台/后台 OpenClaw 调用共用同一超时 |
 | `openclaw_verify_ssl` | bool | ❌ | 默认 `True`，自签名证书场景关掉 |
 | `openclaw_system_prompt` | str | ❌ | 发给 OpenClaw 的 system message 模板；支持 `{project}` / `{user_id}` / `{session_key}` 占位符。示例：我是xxx（AstrBot 机器人的名称），是主人的调度助手，目前转达主人命令。 |
+| `background_result_relay_via_astrbot` | bool | ❌ | 默认 `False`。`True` 时后台完成/失败通知进入 AstrBot 会话管线，由当前人格转述；会额外调用一次 AstrBot 模型。 |
 | `access_control.whitelist_enabled` | bool | ❌ | 默认 `True`——不开启时所有用户可调 |
 | `access_control.allowed_user_ids` | list[str] | ❌ | 白名单用户 ID 列表（按 AstrBot 平台规范，aiocqhttp 用 QQ 号字符串） |
 | `access_control.block_when_disabled` | bool | ❌ | 默认 `False`——未授权时是否给用户明确提示 |

@@ -27,8 +27,8 @@ OpenClaw URL/Token 需手动填写。
 
 作者：唐格天（花翎协助调测）
 仓库：https://github.com/tanggetian/astrbot_plugin_openclaw_caller
-版本：1.3
+版本：1.4.0
 许可：MIT
 """
 
-__version__ = "1.3"
+__version__ = "1.4.0"
