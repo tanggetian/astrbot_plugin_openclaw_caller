@@ -2,7 +2,7 @@
 
 把 main.py 的所有非-Star 逻辑都拆到 ``core/`` 子包，本文件只保留：
 - OpenClawCaller(Star) 子类
-- filter 命令（@filter.command）：/oc、/oc bg、/oc reset
+- 命令 dispatcher（单条 ``/oc`` 命令 → 内部解析子命令 ``bg`` / ``reset``）
 - LLM Tool（@filter.llm_tool）：delegate_to_openclaw、get_openclaw_task_result
 - Web API handler 包装（core/api.py 的薄方法包装，给 register_web_api 用）
 
@@ -10,6 +10,15 @@
 **全部收进 self 实例字段**，不再有 module-level 可变字典。
 
 行为与重构前 **1:1 一致**——纯结构拆分 + 状态封装。
+
+【v1.4.1 兼容修复】
+- 单条 ``@filter.command("oc")`` 把 sub-command (``bg`` / ``reset``) 在 handler
+  内手工 dispatch；不再用 ``@filter.command("oc bg")`` / ``("oc reset")`` 那种
+  中间带空格的多词命令写法——AstrBot 4.x 会把第二个词拆给参数解析器，
+  任务文本被静默截断到首词。
+- ``init_db()`` / 三次 ``register_web_api()`` 迁移到
+  ``async def initialize()``——遵循 AstrBot v4 推荐的 Star 生命周期钩子。
+- Web API handler 入参顺序 / 字段契约保持不变，前端调用方无感。
 """
 from __future__ import annotations
 
@@ -39,6 +48,25 @@ from .core.session import (
 from .core.storage import TaskLog, clear_session, init_db
 from .core.util import PLUGIN_NAME, digest, sanitize_error, to_bool
 
+_USAGE_OC = (
+    "用法：/oc [project] <任务>\n"
+    "  project: **完全动态**——任何 a-z0-9-_+ 字符串都合法\n"
+    "  不填 [project] 默认 general\n"
+    "  例如: /oc project-a 用 SQL 查最近 7 天数据均值\n"
+    "        /oc project-b 写一份调研报告\n"
+    "/oc bg [project] <任务>    后台跑（不阻塞）\n"
+    "/oc reset [project]    清空历史（不填清全部）\n\n"
+    "注意：本插件默认启用白名单，未在 access_control.allowed_user_ids 列表中的用户会被拒绝"
+)
+
+_USAGE_OC_BG = (
+    "用法：/oc bg [project] <任务>\n"
+    "  任务会在后台独立跑，跑完会主动通知主人\n"
+    "  project 完全动态——任何 a-z0-9-_+ 字符串都合法\n"
+    "  例如: /oc bg project-a 用 SQL 查最近 7 天数据均值\n"
+    "        /oc bg project-b 跑一个长调研"
+)
+
 
 class OpenClawCaller(Star):
     def __init__(self, context: Context, config: dict = None):
@@ -59,7 +87,9 @@ class OpenClawCaller(Star):
         self.openclaw_verify_ssl = to_bool(_cfg("openclaw_verify_ssl", True), True)
 
         # 发给 OpenClaw 的 system message 模板；空则不发送 system message
-        self.openclaw_system_prompt = str(_cfg("openclaw_system_prompt", "") or "").strip()
+        self.openclaw_system_prompt = str(
+            _cfg("openclaw_system_prompt", "") or ""
+        ).strip()
         self.background_result_relay_via_astrbot = to_bool(
             _cfg("background_result_relay_via_astrbot", False),
             False,
@@ -69,11 +99,17 @@ class OpenClawCaller(Star):
         ac_raw = _cfg("access_control", {})
         if not isinstance(ac_raw, dict):
             ac_raw = {}
-        self.whitelist_enabled: bool = to_bool(ac_raw.get("whitelist_enabled", True), True)
+        self.whitelist_enabled: bool = to_bool(
+            ac_raw.get("whitelist_enabled", True), True
+        )
         self.allowed_user_ids: set[str] = {
-            str(x).strip() for x in (ac_raw.get("allowed_user_ids") or []) if str(x).strip()
+            str(x).strip()
+            for x in (ac_raw.get("allowed_user_ids") or [])
+            if str(x).strip()
         }
-        self.block_when_disabled: bool = to_bool(ac_raw.get("block_when_disabled", False), False)
+        self.block_when_disabled: bool = to_bool(
+            ac_raw.get("block_when_disabled", False), False
+        )
 
         # === 运行时状态（**全部在 self 上，无 module-level mutable**） ===
         # 客户端：封装备 /v1/chat/completions
@@ -96,6 +132,16 @@ class OpenClawCaller(Star):
         # 运行时 LLM 用过的项目集合（仅用于 /oc reset 提示）
         self._known_projects: set[str] = set()
 
+    # === 生命周期：Star 激活时由 AstrBot 自动 await ===
+
+    async def initialize(self) -> None:
+        """AstrBot 激活插件时调用（v4.x 推荐放这里而不是 ``__init__``）。
+
+        包含：
+        - 配置完整性提示
+        - ``init_db()`` 幂等初始化
+        - 三次 ``context.register_web_api()``
+        """
         # === 校验：openclaw_url / openclaw_token 不能为空 ===
         if not self.openclaw_url or not self.openclaw_token:
             logger.warning(
@@ -109,19 +155,19 @@ class OpenClawCaller(Star):
 
         # === 注册 Plugin Page 后端 API ===
         try:
-            context.register_web_api(
+            self.context.register_web_api(
                 f"/{PLUGIN_NAME}/tasks",
                 self._api_list_tasks,
                 ["GET"],
                 "List OpenClaw tasks (running + history)",
             )
-            context.register_web_api(
+            self.context.register_web_api(
                 f"/{PLUGIN_NAME}/cancel",
                 self._api_cancel_task,
                 ["POST"],
                 "Cancel a running background task",
             )
-            context.register_web_api(
+            self.context.register_web_api(
                 f"/{PLUGIN_NAME}/delete",
                 self._api_delete_task,
                 ["POST"],
@@ -165,7 +211,10 @@ class OpenClawCaller(Star):
         return event_platform_key(event)
 
     def _session_key_for(
-        self, sender_id: str, mode: str = "oc", event: AstrMessageEvent | None = None
+        self,
+        sender_id: str,
+        mode: str = "oc",
+        event: AstrMessageEvent | None = None,
     ) -> str:
         sp_suffix = system_prompt_session_suffix(self.openclaw_system_prompt)
         return make_session_key(
@@ -177,7 +226,10 @@ class OpenClawCaller(Star):
         )
 
     def _next_session_key(
-        self, sender_id: str, mode: str = "oc", event: AstrMessageEvent | None = None
+        self,
+        sender_id: str,
+        mode: str = "oc",
+        event: AstrMessageEvent | None = None,
     ) -> str:
         sp_suffix = system_prompt_session_suffix(self.openclaw_system_prompt)
         return make_next_session_key(
@@ -217,34 +269,58 @@ class OpenClawCaller(Star):
     def _parse_oc_prompt(self, prompt: str) -> tuple[str, str]:
         return parse_oc_prompt(prompt)
 
-    # === filter.command: /oc /oc bg /oc reset ===
+    # === 命令 dispatcher：单条 /oc，内部识别 bg / reset ===
 
     @filter.command("oc")
-    async def openclaw_command(self, event: AstrMessageEvent, prompt: str = ""):
-        """手动调 OpenClaw agent：/oc [project] <任务>（**白名单限制**）
+    async def oc_command(self, event: AstrMessageEvent, prompt: str = ""):
+        """/oc [project] <任务> / /oc bg [project] <任务> / /oc reset [project] 的总入口。
 
-        用法：
-            /oc <任务>                       # 默认 general
-            /oc <project> <任务>            # 任何 a-z0-9-_+ 字符串都合法
-            /oc reset                        # 清空所有项目历史
-            /oc reset <project>             # 只清空指定项目
+        ⚠ AstrBot 4.x 的 ``@filter.command`` 参数解析器在遇到中间有空格的命令
+        名时会被拆成第二参数，所以不能用 ``@filter.command("oc bg")``——那会让
+        ``prompt`` 永远只拿到首词。本 handler 在内部用 ``event.get_message_str()``
+        拿整段文本并手工 partition 第一个词。
+        """
+        # 用整段消息文本而不是 ``prompt`` 参数（参数解析器只给首词）
+        full = (event.get_message_str() or "").strip()
+        # wake stage 已经剥掉 wake_prefix；这里只剥 "oc" 本身
+        if full == "oc":
+            rest = ""
+        elif full.startswith("oc "):
+            rest = full[len("oc") + 1 :].strip()
+        else:
+            rest = full
+
+        if not rest:
+            yield event.plain_result(_USAGE_OC)
+            return
+
+        first, _, body = rest.partition(" ")
+        if first == "bg":
+            if not body.strip():
+                yield event.plain_result(_USAGE_OC_BG)
+                return
+            async for r in self._handle_oc_bg(event, body):
+                yield r
+            return
+        if first == "reset":
+            async for r in self._handle_oc_reset(event, body):
+                yield r
+            return
+
+        # 默认：/oc [project] <任务>
+        async for r in self._handle_oc_default(event, rest):
+            yield r
+
+    async def _handle_oc_default(self, event: AstrMessageEvent, rest: str):
+        """/oc [project] <任务> 的实现（白名单限制）。
+
+        ``rest`` 是 ``oc`` 命令后的整段文本（不含 ``bg`` / ``reset`` 前缀）。
         """
         if not await self._check_allowed(event):
             return
-        if not prompt.strip():
-            yield event.plain_result(
-                "用法：/oc [project] <任务>\n"
-                "  project: **完全动态**——任何 a-z0-9-_+ 字符串都合法\n"
-                "  不填 [project] 默认 general\n"
-                "  例如: /oc project-a 用 SQL 查最近 7 天数据均值\n"
-                "        /oc project-b 写一份调研报告\n"
-                "/oc reset [project]    清空历史（不填清全部）\n\n"
-                "注意：本插件默认启用白名单，未在 access_control.allowed_user_ids 列表中的用户会被拒绝"
-            )
-            return
 
         # 解析可选 [project] 前缀
-        prompt, project = self._parse_oc_prompt(prompt)
+        prompt, project = self._parse_oc_prompt(rest)
 
         # 剥掉 [project] 后 prompt 可能变空（"hello" 这种单 project name）
         if not prompt.strip():
@@ -274,10 +350,16 @@ class OpenClawCaller(Star):
         # 同步入库（Plugin Page 任务列表可见）
         oc_task_id = f"oc-sync-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
         oc_info = {
-            "task_id": oc_task_id, "user_id": sender_id, "project": project,
-            "task_text": prompt, "status": "running", "mode": "oc-sync",
-            "created_at": time.time(), "finished_at": None,
-            "result_text": None, "error_text": None,
+            "task_id": oc_task_id,
+            "user_id": sender_id,
+            "project": project,
+            "task_text": prompt,
+            "status": "running",
+            "mode": "oc-sync",
+            "created_at": time.time(),
+            "finished_at": None,
+            "result_text": None,
+            "error_text": None,
         }
         self._task_log.insert(oc_info)
         try:
@@ -295,33 +377,20 @@ class OpenClawCaller(Star):
         except Exception as e:
             oc_info["status"] = "failed"
             oc_info["finished_at"] = time.time()
-            # DB 里存完整错误（管理员看）；user 收到脱敏提示（不泄露 URL/Token）
             oc_info["error_text"] = str(e)
             self._task_log.update(oc_info)
             yield event.plain_result(f"\n[OpenClaw 调用失败] {sanitize_error(e)}")
 
-    @filter.command("oc bg")
-    async def openclaw_background(self, event: AstrMessageEvent, prompt: str = ""):
-        """手动后台调 OpenClaw agent：/oc bg [project] <任务>（**白名单限制**）
+    async def _handle_oc_bg(self, event: AstrMessageEvent, rest: str):
+        """/oc bg [project] <任务> 的实现（白名单限制）——后台跑，跑完主动通知。
 
-        用法：
-            /oc bg <任务>                # 后台跑，默认 general
-            /oc bg <project> <任务>     # **完全动态**——任何 a-z0-9-_+ 字符串都合法
+        ``rest`` 是 ``/oc bg`` 之后的整段文本。
         """
         if not await self._check_allowed(event):
             return
-        if not prompt.strip():
-            yield event.plain_result(
-                "用法：/oc bg [project] <任务>\n"
-                "  任务会在后台独立跑，跑完会主动通知主人\n"
-                "  project 完全动态——任何 a-z0-9-_+ 字符串都合法\n"
-                "  例如: /oc bg project-a 用 SQL 查最近 7 天数据均值\n"
-                "        /oc bg project-b 跑一个长调研"
-            )
-            return
 
         # 解析可选 [project] 前缀
-        prompt, project = self._parse_oc_prompt(prompt)
+        prompt, project = self._parse_oc_prompt(rest)
         sender_id = str(event.get_sender_id())
         session_key = self._session_key_for(sender_id, project, event)
         self._known_projects.add(project)
@@ -333,20 +402,23 @@ class OpenClawCaller(Star):
 
         # 启动后台协程
         task_id = f"bg-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-        task_handle = asyncio.create_task(background_run(
-            task=prompt,
-            session_key=session_key,
-            user_id=sender_id,
-            project=project,
-            task_id=task_id,
-            event=event,
-            call_openclaw=self._client.call,
-            task_log=self._task_log,
-            bg_tasks=self._bg_tasks,
-            task_handles=self._task_handles,
-            context=self.context,
-            relay_via_astrbot=self.background_result_relay_via_astrbot,
-        ))
+        task_handle = asyncio.create_task(
+            background_run(
+                task=prompt,
+                session_key=session_key,
+                user_id=sender_id,
+                project=project,
+                task_id=task_id,
+                event=event,
+                call_openclaw=self._client.call,
+                task_log=self._task_log,
+                bg_tasks=self._bg_tasks,
+                task_handles=self._task_handles,
+                platform_meta=extract_send_target(event),
+                context=self.context,
+                relay_via_astrbot=self.background_result_relay_via_astrbot,
+            )
+        )
         self._task_handles[task_id] = task_handle
 
         yield event.plain_result(
@@ -356,12 +428,10 @@ class OpenClawCaller(Star):
             f"  跑完会主动通知，不阻塞主人继续聊。"
         )
 
-    @filter.command("oc reset")
-    async def openclaw_reset(self, event: AstrMessageEvent, prompt: str = ""):
-        """清空多轮对话历史（**白名单限制**）
+    async def _handle_oc_reset(self, event: AstrMessageEvent, rest: str):
+        """/oc reset [project] 的实现（白名单限制）——清空 OpenClaw 多轮对话历史。
 
-        /oc reset                  清空所有项目
-        /oc reset <project>    只清空指定项目
+        ``rest`` 是 ``/oc reset`` 之后的 project 字符串（可空）。
         """
         if not await self._check_allowed(event):
             return
@@ -369,8 +439,8 @@ class OpenClawCaller(Star):
 
         # 解析可选 project
         reset_project = "all"
-        if prompt.strip():
-            reset_project = self._normalize_project(prompt.strip())
+        if rest.strip():
+            reset_project = self._normalize_project(rest.strip())
 
         if reset_project == "all":
             # 清空所有已知项目 + general（"general" 作兜底）
@@ -406,8 +476,7 @@ class OpenClawCaller(Star):
             results.append(f"  [tool-sync] {old_key} → {new_key}")
 
         yield event.plain_result(
-            f"🧹 已重置 {len(results)} 个 session:\n"
-            + "\n".join(results)
+            f"🧹 已重置 {len(results)} 个 session:\n" + "\n".join(results)
         )
 
     # === filter.llm_tool: delegate / get_result ===
@@ -450,29 +519,38 @@ class OpenClawCaller(Star):
         # === 白名单检查（**早做**——避免拿不到真 sender 时还跑 call 浪费一次） ===
         if self.whitelist_enabled:
             if not real_sender:
-                return json.dumps({
-                    "ok": False,
-                    "status": "rejected",
-                    "executed": False,
-                    "error": "missing_sender_id",
-                    "reply": "任务未执行：无法确认调用者身份，请重新发送任务。",
-                }, ensure_ascii=False)
-            if real_sender not in self.allowed_user_ids:
-                if not self.block_when_disabled:
-                    return json.dumps({
+                return json.dumps(
+                    {
                         "ok": False,
                         "status": "rejected",
                         "executed": False,
-                        "error": "not_in_whitelist",
-                        "reply": "任务未执行：你不在 OpenClaw 调用白名单中。",
-                    }, ensure_ascii=False)
-                return json.dumps({
-                    "ok": False,
-                    "status": "rejected",
-                    "executed": False,
-                    "error": "forbidden",
-                    "reply": "任务未执行。",
-                }, ensure_ascii=False)
+                        "error": "missing_sender_id",
+                        "reply": "任务未执行：无法确认调用者身份，请重新发送任务。",
+                    },
+                    ensure_ascii=False,
+                )
+            if real_sender not in self.allowed_user_ids:
+                if not self.block_when_disabled:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "status": "rejected",
+                            "executed": False,
+                            "error": "not_in_whitelist",
+                            "reply": "任务未执行：你不在 OpenClaw 调用白名单中。",
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "status": "rejected",
+                        "executed": False,
+                        "error": "forbidden",
+                        "reply": "任务未执行。",
+                    },
+                    ensure_ascii=False,
+                )
             sender_id = real_sender
         else:
             # 白名单关闭：拿不到真 sender 时用 anonymous 占位（不抛错，方便 LLM 自由调用）
@@ -507,38 +585,49 @@ class OpenClawCaller(Star):
         # 后台模式：调 background_run（不阻塞 LLM）
         if background:
             task_id = f"bg-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-            task_handle = asyncio.create_task(background_run(
-                task=task,
-                session_key=session_key,
-                user_id=sender_id,
-                project=project,
-                task_id=task_id,
-                event=event,
-                call_openclaw=self._client.call,
-                task_log=self._task_log,
-                bg_tasks=self._bg_tasks,
-                task_handles=self._task_handles,
-                platform_meta=extract_send_target(event),  # v1.2 延迟推送 fallback
-                context=self.context,                       # v1.2 延迟推送 fallback
-                relay_via_astrbot=self.background_result_relay_via_astrbot,
-            ))
+            task_handle = asyncio.create_task(
+                background_run(
+                    task=task,
+                    session_key=session_key,
+                    user_id=sender_id,
+                    project=project,
+                    task_id=task_id,
+                    event=event,
+                    call_openclaw=self._client.call,
+                    task_log=self._task_log,
+                    bg_tasks=self._bg_tasks,
+                    task_handles=self._task_handles,
+                    platform_meta=extract_send_target(event),  # v1.2 延迟推送 fallback
+                    context=self.context,  # v1.2 延迟推送 fallback
+                    relay_via_astrbot=self.background_result_relay_via_astrbot,
+                )
+            )
             self._task_handles[task_id] = task_handle
-            return json.dumps({
-                "ok": True,
-                "status": "submitted",
-                "executed": True,
-                "task_id": task_id,
-                "project": project,
-                "message": f"任务已提交后台运行（project={project}），跑完后会主动通知主人",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "submitted",
+                    "executed": True,
+                    "task_id": task_id,
+                    "project": project,
+                    "message": f"任务已提交后台运行（project={project}），跑完后会主动通知主人",
+                },
+                ensure_ascii=False,
+            )
 
         # 同步模式：写库审计（Plugin Page 任务列表可见）
         task_id = f"tool-sync-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
         info = {
-            "task_id": task_id, "user_id": sender_id, "project": project,
-            "task_text": task, "status": "running", "mode": "tool-sync",
-            "created_at": time.time(), "finished_at": None,
-            "result_text": None, "error_text": None,
+            "task_id": task_id,
+            "user_id": sender_id,
+            "project": project,
+            "task_text": task,
+            "status": "running",
+            "mode": "tool-sync",
+            "created_at": time.time(),
+            "finished_at": None,
+            "result_text": None,
+            "error_text": None,
         }
         self._task_log.insert(info)
         try:
@@ -552,25 +641,31 @@ class OpenClawCaller(Star):
             info["finished_at"] = time.time()
             info["result_text"] = result
             self._task_log.update(info)
-            return json.dumps({
-                "ok": True,
-                "status": "done",
-                "executed": True,
-                "reply": result,
-                "project": project,
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "done",
+                    "executed": True,
+                    "reply": result,
+                    "project": project,
+                },
+                ensure_ascii=False,
+            )
         except Exception as e:
             info["status"] = "failed"
             info["finished_at"] = time.time()
             info["error_text"] = str(e)
             self._task_log.update(info)
-            return json.dumps({
-                "ok": False,
-                "status": "failed",
-                "executed": False,
-                "error": sanitize_error(e),
-                "reply": "任务执行失败，详情见 AstrBot 日志。",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "failed",
+                    "executed": False,
+                    "error": sanitize_error(e),
+                    "reply": "任务执行失败，详情见 AstrBot 日志。",
+                },
+                ensure_ascii=False,
+            )
 
     @filter.llm_tool(name="get_openclaw_task_result")
     async def get_openclaw_task_result(
@@ -599,17 +694,23 @@ class OpenClawCaller(Star):
             except Exception:
                 sender_id = ""
         if not sender_id:
-            return json.dumps({
-                "ok": False,
-                "error": "missing_sender_id",
-                "reply": "无法确认调用者身份，不能读取任务结果。",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "missing_sender_id",
+                    "reply": "无法确认调用者身份，不能读取任务结果。",
+                },
+                ensure_ascii=False,
+            )
         if self.whitelist_enabled and sender_id not in self.allowed_user_ids:
-            return json.dumps({
-                "ok": False,
-                "error": "forbidden",
-                "reply": "你不在 OpenClaw 调用白名单中，不能读取任务结果。",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "forbidden",
+                    "reply": "你不在 OpenClaw 调用白名单中，不能读取任务结果。",
+                },
+                ensure_ascii=False,
+            )
         try:
             limit = int(max_chars or 12000)
         except (TypeError, ValueError):
@@ -623,29 +724,35 @@ class OpenClawCaller(Star):
         )
         row = self._task_log.get_for_user(sender_id, task_id_q, project_q)
         if not row:
-            return json.dumps({
-                "ok": False,
-                "error": "task_not_found",
-                "reply": "未找到可读取的 OpenClaw 任务结果。",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "task_not_found",
+                    "reply": "未找到可读取的 OpenClaw 任务结果。",
+                },
+                ensure_ascii=False,
+            )
         text = row.get("result_text") or row.get("error_text") or ""
         truncated = len(text) > limit
         if truncated:
             text = text[:limit]
-        return json.dumps({
-            "ok": True,
-            "task_id": row.get("task_id"),
-            "project": row.get("project"),
-            "status": row.get("status"),
-            "mode": row.get("mode"),
-            "task_text": row.get("task_text"),
-            "created_at": row.get("created_at"),
-            "finished_at": row.get("finished_at"),
-            "truncated": truncated,
-            "max_chars": limit,
-            "result": text,
-            "reply": text if text else "任务尚未产生结果。",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "task_id": row.get("task_id"),
+                "project": row.get("project"),
+                "status": row.get("status"),
+                "mode": row.get("mode"),
+                "task_text": row.get("task_text"),
+                "created_at": row.get("created_at"),
+                "finished_at": row.get("finished_at"),
+                "truncated": truncated,
+                "max_chars": limit,
+                "result": text,
+                "reply": text if text else "任务尚未产生结果。",
+            },
+            ensure_ascii=False,
+        )
 
     # === Plugin Page Web API 包装（core/api.py 的薄方法包装，给 register_web_api 用） ===
 

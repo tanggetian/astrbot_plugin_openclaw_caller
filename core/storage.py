@@ -15,7 +15,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_data_path,
+    get_astrbot_plugin_data_path,
+)
 
 from .util import PLUGIN_NAME
 
@@ -23,11 +26,25 @@ from .util import PLUGIN_NAME
 def get_db_path() -> Path:
     """获取插件独立 SQLite 数据库路径。
 
-    放在 ``<data_dir>/plugins/<PLUGIN_NAME>/openclaw_caller.db``，不污染 AstrBot 主库。
+    放在 AstrBot 标准插件数据目录 ``<data_dir>/plugin_data/<PLUGIN_NAME>/openclaw_caller.db``，
+    与源码目录分离，方便插件升级 / 重装不丢审计数据。
+
+    【v1.4.1 兼容修复】
+    老版本曾用 ``get_astrbot_data_path() / "plugins" / PLUGIN_NAME``——那是插件**源码**目录。
+    为不打断历史部署，若发现旧路径已有数据库文件，仍走旧路径直到迁移完成。
     """
-    data_dir = Path(get_astrbot_data_path()) / "plugins" / PLUGIN_NAME
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir / "openclaw_caller.db"
+    new_dir = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
+    legacy_dir = Path(get_astrbot_data_path()) / "plugins" / PLUGIN_NAME
+
+    # 兼容：旧库存在则继续读旧位置；新库已存在则忽略旧库
+    legacy_db = legacy_dir / "openclaw_caller.db"
+    new_db = new_dir / "openclaw_caller.db"
+    if legacy_db.exists() and not new_db.exists():
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        return legacy_db
+
+    new_dir.mkdir(parents=True, exist_ok=True)
+    return new_db
 
 
 def init_db() -> None:

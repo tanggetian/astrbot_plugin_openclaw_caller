@@ -1,4 +1,28 @@
 # 更新日志
+
+## 1.4.1 - 2026-10-16
+
+**适配修复**：与 AstrBot v4.17+（含 v4.29）兼容，不改任何对外行为契约。
+
+### 修复
+
+- **修复 `/oc bg` / `/oc reset` 子命令被截断的 bug**：v4.x 的 `CommandFilter.validate_and_convert_params` 在命令名中间含空格时会把第二个词拆给第一个参数，导致 `prompt` 永远只拿到任务的首词（例如 `/oc bg 写一份调研报告` 实际传入 handler 时 `prompt="写"`）。改为单条根命令 `@filter.command("oc")`，handler 内用 `event.get_message_str()` 拿整段文本并按子命令路由到 `_handle_oc_default` / `_handle_oc_bg` / `_handle_oc_reset` 三个内部方法。
+
+### 内部改进
+
+- **把初始化逻辑从 `__init__` 迁移到 `async def initialize()`**：遵循 AstrBot v4 `Star` 基类推荐的生命周期钩子。`init_db()`、三次 `context.register_web_api()`、配置缺失警告等全部迁移过去；`__init__` 现在只做配置解析 + 字段初始化。
+- **Web API 从 quart 迁到 `astrbot.api.web`**：`core/api.py` 现在 `from astrbot.api.web import json_response, request`；`jsonify({...}, status_code)` → `json_response({...}, status_code=...)`；`request.get_json() or {}` → `request.json(default={})`。响应体形态（`{ok, ...}`）保持不变，前端 `pages/openclaw-tasks/app.js` 无需改动。
+- **DB 路径迁到 `data/plugin_data/<name>/`**：`core/storage.py` 的 `get_db_path()` 切换到 `get_astrbot_plugin_data_path()` 为推荐路径，同时保留对旧路径 `<data_dir>/plugins/<name>/` 的兼容读取，**不丢失已存在的任务审计**。运维可手动 `mv` 到新位置完成迁移。
+
+### 兼容性
+
+- ✅ 前端 `pages/openclaw-tasks/` 调用契约零改动
+- ✅ LLM Tool `delegate_to_openclaw` / `get_openclaw_task_result` 输入输出零改动
+- ✅ `_conf_schema.json` 字段零改动
+- ✅ AstrBot `metadata.yaml` 的 `astrbot_version: ">=4.17.0"` 约束不变；v4.29.0 已验证可用
+
+> 本版本是 **patch 级别**（仅作兼容修复 / 内部重构，不引入新功能 / 不改对外行为）；按 semver 规则升级安全。
+
 ## 1.4.0 - 2026-08-04
 
 - **支持 AstrBot 人格转述后台结果**：新增 `background_result_relay_via_astrbot` 开关。默认关闭时保持直接主动推送；开启后，OpenClaw 后台任务完成或失败会重新进入原会话的 AstrBot 消息管线，由当前人格、模型和会话上下文向用户转述。
